@@ -1,10 +1,11 @@
 [tool]
-id = "com.thelightphone.app"
-label = "Light SDK Tool"
+id = "com.gios.brightchatlite"
+label = "Chat Lite"
 versionCode = 1
-versionName = "1.0.0"
-permissions = ["android.permission.INTERNET"]
-capabilities = []
+versionName = "0.1.0"
+permissions = ["android.permission.INTERNET", "android.permission.ACCESS_NETWORK_STATE", "android.permission.CAMERA"]
+capabilities = ["cleartext-http"]
+orientation = "portrait"
 # for the LightOS emulator, use the line below and build with -DlightSdk.allowAltServerPackage=true
 # serverPackage = "com.thelightphone.sdk.emulator"
 serverPackage = "com.lightos"

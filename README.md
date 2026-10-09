@@ -1,72 +1,107 @@
-# light-sdk
-or: a tool for building Tools
+# Chat Lite (BrightChatLite)
 
-## tl;dr
-This repository contains the scaffolding for building simple tools for the Light Phone III. Included are a library ([:sdk:client](./sdk/client)) and placeholder application ([:tool](./tool)) that depends on it. To create a tool that is fully compatible with LightOS, you must write your application code within the `tool` module, using the primitives provided by the sdk client library.
+An iMessage client for the Light Phone III, built as an official Light SDK tool. It talks to
+your own [BlueBubbles Server](https://bluebubbles.app) (a Mac signed into iMessage) over the
+server's REST API. It is the Tool Library version of BrightChat, Giovanni's sideloaded
+iMessage app, cut down to what a Light tool is allowed to do.
 
-You can and should use current Android best practices: Kotlin for all source code, Compose for UI, Coroutines for async programming, and MVVM architecture. **Although this is appears to be a fairly standard Android dev environment, you will quickly find out that we are (gently but broadly) restricting which Android APIs and third-party libraries can be used. This is in an effort to provide a secure and distinctly _light_ experience for our users. These restrictions are _not_ set in stone and should ease up over time. If there is a stable, open-source library that you'd like us to allow, please let us know! More on this later.**
+Built on [lightphone/light-sdk](https://github.com/lightphone/light-sdk) (MIT). The SDK modules
+(`sdk/`, `plugin/`, `lint-rules/`) are untouched upstream code; the tool lives in `tool/`.
 
-## IMPORTANT!! July 1, 2026 Update
-If you're reading this, welcome! You're early! (in a cool way)
-This repo is a work-in-progress and will remain so for a while. Things are going to change _fast_ in the coming weeks. If you're going to start building right away, be sure to `git pull` frequently.
-Before you do, though, please be aware that **while we feel good about letting everybody start to explore and build, we are still working on the infrastructure to properly deploy your new tools.**
-The currently builds of LightOS in the wild are not yet ready to "play nice" with the tools built here. If you're someone who's already comfortable working with ADB to sideload APKs on your
-Light Phone III, you can totally do that with whatever you do here! But we're shooting to make these tools feel as seamless as the ones already available in LightOS, and that's going to take a bit more work. 
-We're hoping to have an update on that front later this month. In the meantime, the best way to start working is to use an Android emulator running our new [LightOS Emulator](sdk/emulator). The instructions for getting that up and running
-are [right here](docs/system_app).
+## What it does
 
-## Quickstart
+- **Setup**: type the server address and password, or scan a QR code with the SDK's
+  `LightQrCodeScanner`. Accepted codes: the BlueBubbles Server's own client QR (a JSON array,
+  password first, URL second), a JSON object with `url` and `password`, or a URL with
+  `?password=`. The address and password are checked against `server/info` before they are
+  saved. The password is stored encrypted with an Android Keystore key.
+- **Conversation list**, newest first, built the same way BrightChat builds it: one
+  `message/query` sweep, so a freshly active chat can't fall off the list. Forked group rooms
+  collapse into one row. Unread chats get a dot. Favorites (star a thread) are pinned to the top.
+  Chats from people in the Mac's address book are on the main list; unknown senders are one tap
+  away behind UNKNOWN, as in BrightChat.
+- **Names** come from the Mac's address book through `GET /api/v1/contact`, normalized so
+  `+1 (315) 212-2695` and `+13152122695` match.
+- **Thread view**: text, sender names on the first message of a run, day dividers, group
+  events (renames, member changes), tapbacks shown under the message they react to, and
+  "Delivered" / "Read 3:14 PM" / "Not delivered" under your newest message in a 1:1.
+- **Photos** are downloaded from `attachment/:guid/download`, downsampled with
+  `BitmapFactory` and shown inline (cached on disk, 60 MB cap). Other attachments (video,
+  audio, contact cards, PDFs) show as a labeled placeholder such as `[Video · IMG_0042.MOV]`.
+- **Reply and new message**: REPLY opens the LP3 keyboard; the message shows immediately and is
+  reconciled with the server's copy. The compose icon on the list starts a 1:1 with a phone
+  number or email.
+- **Mark read**: opening a thread marks it read on the Mac when the server's Private API is on
+  (the same gate BrightChat uses), so the unread state clears on your other Apple devices.
+- **Live updates by polling**: the open thread polls every 5 seconds and the list every 10
+  seconds, only while that screen is showing and only when `LightConnectivity` reports a
+  network. A `LightWork` job refreshes the cache every 15 minutes in the background.
+- **Offline**: conversations and the newest 5,000 messages are cached in Room, so the tool opens
+  to your chats without a connection.
+- The scroll wheel scrolls the list and the thread.
 
-### Running your Tool
-**You can test your tool on any Android device or emulator**, but certain functionality (receiving push notifications, requesting special permissions) can only be tested with:
-A) Real Light Phone hardware running LightOS
-B) An Android emulator (on your computer) set up to run our LightOS emulator app as a _system app_ ([see advanced instructions](docs/system_app))
+## What it drops, and why
 
-You can quickly [create an emulator](https://developer.android.com/studio/run/managing-avds) that generally feels like an LPIII by using the following settings:
-* 1080 X 1240, 3.92" display
-* Android API 34
-* NO Google Play Services installed
+| BrightChat feature | Why it is not here |
+| --- | --- |
+| Matrix / Beeper bridges (WhatsApp, Signal, ...) | Needs trixnity, which is not on the SDK's dependency allowlist. Dropped entirely. |
+| Socket.IO live delivery | The socket.io client is not allowlisted. Polling replaces it while a screen is open. ktor websockets are allowed, so a raw Engine.IO client could replace polling later. |
+| System notifications, heads-up box, buzz on new message | Tools have no notifications API (`NotificationManager` needs `getSystemService`, which the SDK blocks), and overlay windows and activities are blocked. |
+| Typing indicators, reactions, replies, edits, group management | Kept the scope to reading and sending text. The endpoints exist; they can come back. |
+| Sending photos, the in-app photo picker, inline camera | The only camera access a tool gets is QR scanning, there is no `contentResolver` for the gallery, and CameraX is not allowlisted. |
+| Video and audio playback | Not attempted in this version; those attachments show as labeled placeholders. |
+| Color while viewing a photo | Needs `WRITE_SECURE_SETTINGS` and a settings write; not available to tools. |
+| The phone's own contacts and contact photos | `contentResolver` is blocked. Names come from the Mac's address book instead. |
+| Share target, notification deep links, dialer, newsletter, GIFs, AI agents | Need intents, other apps, or services a tool cannot reach. |
+| Catch-up alarms, boot receivers, network callbacks | Tools get `LightWork` (15-minute minimum) and nothing else for background work. |
 
-### Start Building
-1. Fork and/or clone this repository into your local dev environment.
-2. Install Android Studio and open this project within it. (IntelliJ IDEA should also work)
+## Setup
 
-3. Edit the code in `HomeScreen` and `HomeScreenViewModel` to get started. `Homescreen` surfaces a `@Composable` method named `Content`. This is the UI that is shown when the tool first boots. You'll notice this UI sources data from it's `viewModel` field, which is an instance of `HomeScreenViewModel`. Edit that class with your screen's logic and expose the data to the UI using either Compose `State` or Coroutine `Flow`s. If you want to create a new screen, create a new Screen/ViewModel pair: your screen should extend from `LightScreen` and your VM from `LightScreenViewModel`. Your screen implementation will need:
-   1. A direct reference to your ViewModel's class type
-   2. A factory method for creating a new instance of your ViewModel.
+1. Run BlueBubbles Server on a Mac signed into iMessage. Note its address and password.
+2. Make the server reachable from the phone: the Tailscale app on both (use the Mac's
+   `100.x.y.z` address or MagicDNS name) or the same Wi-Fi. Plain `http://` works; the tool
+   declares the `cleartext-http` capability for this reason.
+3. Open Chat Lite, tap SET UP, and either type the address (for example
+   `http://100.64.0.2:1234`) and password, or tap SCAN QR and scan the code BlueBubbles Server
+   shows under "Connect a client".
+4. Optional: turn on BlueBubbles' Private API on the Mac so reading here marks chats read
+   everywhere and group sends are more reliable.
 
-Look at `HomeScreen` as an example for how this is done. To navigate to your new screen, use the `navigateTo` function built into `LightScreen` - just pass it a lambda to create an instance of your new screen. Note that the `LightScreen` constructor takes in a `SealedLightActivity`. The lambda is provided an instance of this as a default parameter.
+## Endpoints used
 
-Since LightOS does not use Android system navigation, we provide a back button for you. As long as you use `navigateTo` to move between screens, our back button should work great. If need be, you can override the `onBackPressed` method in your `LightViewModel`.
+All are BlueBubbles REST v1 calls BrightChat already makes, authenticated with `?password=`:
+`GET server/info`, `POST message/query`, `GET chat/:guid/message`, `POST message/text`,
+`POST chat/:guid/read`, `POST chat/new`, `GET contact`, `GET attachment/:guid/download`.
 
-### Submitting Your Tool
-Given our relatively limited resources and desire to keep our users safe, we're requiring that all community tools be open source (including our own!). 
-Tools are built and signed directly from a publicly available git commit, and we'll be archiving the source at build time.
-You're free to build and share privately, but LightOS won't let you install tools that are not signed by us without acknowledging privacy and performance risks.
-We won't block users from performing these "dangerous" sideloads, but we're not going to encourage it either. 
-Using the Dashboard, developers are able to queue up a build of your tool on our servers, and if it follows our guidelines and compiles cleanly, we will hand you back a signed, shareable APK.
+## Permissions
 
-1. Review the [Tool Guidelines](TOOL_GUIDELINES.md) to get a sense of the kind of tools we're hoping to showcase.
-2. Ensure your tool is built with the latest Light SDK version and is accessible via a public Github repo.
-3. Enable developer mode on the [dashboard](https://dashboard.thelightphone.com/): Settings -> Account -> Developer Account.
-4. From there, you can create your tool: Settings -> Account -> Developer Account -> Manage Custom Tools -> Submit New Tool:
-  - The package name is unique for all tools and can't be changed later. It is pulled from the default branch of the Github repo submitted upon registering the tool.
-  - You'll then have the opportunity to add images. You can add them later on as well, but we'll require at least one for a tool to be approved.
-5. Now go in the tool detail page and press "submit build":
-  - Enter the git ref of the version of the tool to be built and a small description of the changelog.
-  - If your tool already has an active build, you won't be able to submit another.
-  - The `versionCode` of the submitted build should be higher than the one of the last version listed in the Tool page.
-6. Wait for the build to finish:
-  - In case of an error, use the "view details" button on the "Builds" section of the Tool page to check the error message. The "retry build" can be used to re-attempt building from the same git ref if necessary.
-  - If you believe the build error is due to an issue on our end (e.g. with light-sdk or our infrastructure), please feel free to open an Issue on this repo!
-  - In case of success, the "download apk" button should appear. A new "Version" entry will be created with "pending approval" status.
-7. Our team will review the builds and reach out to you via e-mail if we have any feedback regarding the approval process.
-8. If you have any questions, please e-mail us at tools@thelightphone.com
+`INTERNET`, `ACCESS_NETWORK_STATE` (skip polling when offline) and `CAMERA` (QR setup only).
+Capability: `cleartext-http`.
 
-### Sharing Your Tool
-Once we release a version of LightOS that supports community tools, users will have an option to choose what kind of tools they want to be able to run on their device:
-- **Light-approved tools**: These include tools that are either built internally by the Light team, or built by the community and officially tested/signed-off by the Light team. We don't know _exactly_ what that sign-off process is going to look like, but as a heads-up: we're going to be looking pretty hard at whether a submitted tool matches the Light ethos both functionally and aesthetically. We've included a UX/UI library to make this as easy as possible! From a technical standpoint, these approved tools are both signed by us _and_ added to an "allow-list" within LightOS. Phones with this option selected will only install and display tools that meet both criteria.
-- **SDK-built tools**: This is a slightly more permissive choice. Phones with this option selected will install and launch any tool that was built and signed by Light. These don't require any manual approval by us (although we can block them in extreme cases). If a user wants to be able to install a tool that was shared locally or somewhere outside of Light's dashboard, but they still want to be confident that it will run well and integrate nicely with LightOS, they might choose this option.
-- **Any tools**: A user will have the option to make any APK launchable from LightOS, but they will own the responsibility of getting them installed/uninstalled. When a user selects this option, we will warn them that they are potentially opening their device up to security risks, and that doing so will limit our ability to support them if something goes wrong.
+## Build
 
-## [Complete Documentation](./docs)
+```
+./gradlew -DlightSdk.toolOnly=true :tool:assembleDebug
+```
+
+Unit tests and Light's lint rules:
+
+```
+./gradlew -DlightSdk.toolOnly=true :tool:testDebugUnitTest :tool:lintDebug
+```
+
+GitHub Actions runs all three on every push (`.github/workflows/build-tool.yml`).
+
+## Tool Library submission notes
+
+- Tool id `com.gios.brightchatlite`, label "Chat Lite". Bump `versionCode` in
+  `tool/lighttool.toml` for every release.
+- Uses only allowlisted libraries already provided by `:sdk:client` (ktor + OkHttp,
+  kotlinx-serialization, Room, DataStore, LightWork). No extra dependencies.
+- The tool needs a server the user runs themselves. Reviewers will need a BlueBubbles Server
+  (or should be told the tool shows its setup screen until one is configured).
+- No data leaves the phone except to the server the user enters.
+
+## License
+
+MIT, see `LICENSE`.

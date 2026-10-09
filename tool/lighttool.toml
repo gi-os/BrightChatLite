@@ -1,6 +1,6 @@
 [tool]
 id = "com.gios.brightchatlite"
-label = "Chat Lite"
+label = "BrightChat Lite"
 versionCode = 1
 versionName = "0.1.0"
 permissions = ["android.permission.INTERNET", "android.permission.ACCESS_NETWORK_STATE", "android.permission.CAMERA"]

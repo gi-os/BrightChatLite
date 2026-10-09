@@ -28,34 +28,34 @@ data class MessageEntity(
 )
 
 @Dao
-interface ChatDao {
+abstract class ChatDao {
     @Query("SELECT * FROM conversations ORDER BY sortDate DESC")
-    suspend fun conversations(): List<ConversationEntity>
+    abstract suspend fun conversations(): List<ConversationEntity>
 
     @Query("DELETE FROM conversations")
-    suspend fun clearConversations()
+    abstract suspend fun clearConversations()
 
     @Upsert
-    suspend fun upsertConversations(rows: List<ConversationEntity>)
+    abstract suspend fun upsertConversations(rows: List<ConversationEntity>)
 
     @Transaction
-    suspend fun replaceConversations(rows: List<ConversationEntity>) {
+    open suspend fun replaceConversations(rows: List<ConversationEntity>) {
         clearConversations()
         upsertConversations(rows)
     }
 
     @Query("SELECT * FROM messages WHERE chatGuid IN (:chatGuids) ORDER BY date DESC LIMIT :limit")
-    suspend fun messages(chatGuids: List<String>, limit: Int): List<MessageEntity>
+    abstract suspend fun messages(chatGuids: List<String>, limit: Int): List<MessageEntity>
 
     @Upsert
-    suspend fun upsertMessages(rows: List<MessageEntity>)
+    abstract suspend fun upsertMessages(rows: List<MessageEntity>)
 
     @Query("DELETE FROM messages")
-    suspend fun clearMessages()
+    abstract suspend fun clearMessages()
 
     /** Keeps the cache bounded: drops everything but the newest [keep] messages. */
     @Query("DELETE FROM messages WHERE guid NOT IN (SELECT guid FROM messages ORDER BY date DESC LIMIT :keep)")
-    suspend fun trimMessages(keep: Int)
+    abstract suspend fun trimMessages(keep: Int)
 }
 
 @Database(entities = [ConversationEntity::class, MessageEntity::class], version = 1, exportSchema = false)

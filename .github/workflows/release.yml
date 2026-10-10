@@ -1,0 +1,37 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish the signed APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
+      - run: sdkmanager "platforms;android-36"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Assemble release
+        run: ./gradlew -DlightSdk.toolOnly=true :tool:testDebugUnitTest :tool:assembleRelease --stacktrace
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          APK=$(ls tool/build/outputs/apk/release/*.apk | head -1)
+          OUT="${GITHUB_REPOSITORY#*/}-${TAG}.apk"
+          cp "$APK" "$OUT"
+          NOTES=RELEASE_NOTES.md
+          [ -f "$NOTES" ] || { echo "Release $TAG." > notes.txt; NOTES=notes.txt; }
+          gh release create "$TAG" "$OUT" --title "${GITHUB_REPOSITORY#*/} $TAG" --notes-file "$NOTES"

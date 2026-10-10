@@ -27,6 +27,17 @@ android {
     compileSdk = rootProject.ext["compileSdk"] as Int
 
     signingConfigs {
+        // Signs the sideload APKs published as GitHub releases for BrightMarket.
+        // Committed on purpose so a fresh checkout builds an APK that installs over
+        // the last one. Light's Tool Library builds are signed by Light instead.
+        create("brightLite") {
+            storeFile = file("keystore/bright-lite.jks")
+            storePassword = "brightlite"
+            keyAlias = "brightlite"
+            keyPassword = "brightlite"
+            enableV2Signing = true
+            enableV3Signing = true
+        }
         create("lightsdkDev") {
             storeFile = file("../sdk/keys/lightsdk-dev.jks")
             storePassword = "android"
@@ -52,7 +63,7 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
-            signingConfig = signingConfigs.getByName("lightsdkDev")
+            signingConfig = signingConfigs.getByName("brightLite")
         }
     }
 

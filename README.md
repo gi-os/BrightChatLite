@@ -1,5 +1,7 @@
 # Chat Lite (BrightChatLite)
 
+> **This is the Lite version.** BrightChat Lite is built only with Light's official SDK, so it can go in the Light Tool Library. It does less than the full app. For the full app, get [BrightChat](https://github.com/gi-os/BrightChat) ([on BrightMarket](https://brightmarket.gzl.dev/app/com.gios.lightchat/)).
+
 An iMessage client for the Light Phone III, built as an official Light SDK tool. It talks to
 your own [BlueBubbles Server](https://bluebubbles.app) (a Mac signed into iMessage) over the
 server's REST API. It is the Tool Library version of BrightChat, Giovanni's sideloaded

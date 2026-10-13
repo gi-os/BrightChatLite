@@ -12,6 +12,7 @@ import com.gios.brightchatlite.api.ServerInfo
 import com.gios.brightchatlite.model.ChatMessage
 import com.gios.brightchatlite.model.Contacts
 import com.gios.brightchatlite.model.Conversation
+import com.gios.brightchatlite.model.ConversationList
 import com.gios.brightchatlite.model.PENDING_PREFIX
 import com.thelightphone.sdk.SealedLightContext
 import com.thelightphone.sdk.buildDatabase
@@ -60,6 +61,18 @@ class ChatRepository private constructor(ctx: SealedLightContext) {
     /** The last refresh's failure, for the list's status line; null when it worked. */
     private val _lastError = MutableStateFlow<String?>(null)
     val lastError: StateFlow<String?> = _lastError.asStateFlow()
+
+    /** Whether the "Older chats" row can load more, is loading, or has reached the start of history. */
+    enum class OlderState { MORE, LOADING, END }
+
+    private val _older = MutableStateFlow(OlderState.MORE)
+    val older: StateFlow<OlderState> = _older.asStateFlow()
+
+    /** Where the next older page starts in the newest-first message sweep. 0 until the first sweep. */
+    private var olderOffset = 0
+
+    /** The first sweep after the process starts reads far back; the polls after it only read the top. */
+    private var deepSweepDone = false
 
     private var loaded = false
     private var client: BlueBubblesClient? = null
@@ -119,6 +132,9 @@ class ChatRepository private constructor(ctx: SealedLightContext) {
         attachmentDir().deleteRecursively()
         _conversations.value = emptyList()
         _contacts.value = Contacts()
+        _older.value = OlderState.MORE
+        olderOffset = 0
+        deepSweepDone = false
         client = null
         clientKey = null
     }
@@ -166,28 +182,71 @@ class ChatRepository private constructor(ctx: SealedLightContext) {
     // ---- network ----
 
     /**
-     * Rebuilds the conversation list from one message sweep, caches the swept messages so
-     * threads open instantly, and refreshes the contact index once a day.
+     * Brings the conversation list up to date. The first sweep after the tool starts reads
+     * [FIRST_SWEEP] messages back, and the polls after it read only [POLL_SWEEP]. Each sweep
+     * is merged into the saved list rather than replacing it, so chats outside the sweep
+     * stay listed. Swept messages are cached so threads open at once, and the contact index
+     * is refreshed once a day.
      */
     suspend fun refreshConversations(): Result<List<Conversation>> = withContext(Dispatchers.IO) {
         refreshLock.withLock {
             val result = runCatching {
                 val api = requireClient()
-                val sweep = api.messageSweep(SWEEP_SIZE)
-                val list = BlueBubblesJson.conversationsFromSweep(sweep)
-                dao.replaceConversations(list.map {
-                    ConversationEntity(it.guid, it.lastDate, json.encodeToString(Conversation.serializer(), it))
-                })
+                val size = if (deepSweepDone) POLL_SWEEP else FIRST_SWEEP
+                val sweep = api.messageSweep(size)
+                val merged = saveMerged(BlueBubblesJson.conversationsFromSweep(sweep))
                 storeMessages(sweep.map { BlueBubblesJson.parseMessage(it) })
                 dao.trimMessages(MESSAGE_CACHE_SIZE)
-                _conversations.value = list
+                if (!deepSweepDone) {
+                    deepSweepDone = true
+                    if (olderOffset == 0) olderOffset = size - PAGE_OVERLAP
+                    if (sweep.size < size) _older.value = OlderState.END
+                }
                 dataStore.edit { it[KEY_LAST_SYNC] = System.currentTimeMillis() }
                 refreshContactsIfStale(api)
-                list
+                merged
             }
             _lastError.value = result.exceptionOrNull()?.let(::describe)
             result
         }
+    }
+
+    /**
+     * Reads the next [OLDER_PAGE] messages further back and adds the chats they belong to.
+     * Asked for by the person, one page per tap, so the list never grows on its own.
+     */
+    suspend fun loadOlderConversations(): Result<Unit> = withContext(Dispatchers.IO) {
+        if (_older.value != OlderState.MORE) return@withContext Result.success(Unit)
+        _older.value = OlderState.LOADING
+        val result = runCatching {
+            refreshLock.withLock {
+                val api = requireClient()
+                if (olderOffset == 0) olderOffset = FIRST_SWEEP - PAGE_OVERLAP
+                val page = api.messageSweep(OLDER_PAGE, offset = olderOffset)
+                saveMerged(BlueBubblesJson.conversationsFromSweep(page))
+                storeMessages(page.map { BlueBubblesJson.parseMessage(it) })
+                dao.trimMessages(MESSAGE_CACHE_SIZE)
+                olderOffset += OLDER_PAGE - PAGE_OVERLAP
+                page.size < OLDER_PAGE
+            }
+        }
+        _older.value = when {
+            result.isFailure -> OlderState.MORE
+            result.getOrDefault(false) -> OlderState.END
+            else -> OlderState.MORE
+        }
+        result.exceptionOrNull()?.let { _lastError.value = describe(it) }
+        result.map { }
+    }
+
+    /** Merges [incoming] into the list in memory and in the cache, and returns the result. */
+    private suspend fun saveMerged(incoming: List<Conversation>): List<Conversation> {
+        val merged = ConversationList.merge(_conversations.value, incoming)
+        dao.replaceConversations(merged.map {
+            ConversationEntity(it.guid, it.lastDate, json.encodeToString(Conversation.serializer(), it))
+        })
+        _conversations.value = merged
+        return merged
     }
 
     private suspend fun refreshContactsIfStale(api: BlueBubblesClient) {
@@ -291,8 +350,23 @@ class ChatRepository private constructor(ctx: SealedLightContext) {
         private const val CONTACTS_FILE = "contacts.json"
         private val CONTACT_MAP = MapSerializer(String.serializer(), String.serializer())
 
-        /** Messages per list sweep: enough for the recently active chats, small enough for a tunnel. */
-        const val SWEEP_SIZE = 300
+        /**
+         * Messages read by the first sweep after the tool starts. The server's maximum, the
+         * same depth the full BrightChat reads for its list.
+         */
+        const val FIRST_SWEEP = 1_000
+
+        /** Messages read by each poll while the list is open: just the newest activity. */
+        const val POLL_SWEEP = 150
+
+        /** Messages read per tap of "Older chats". */
+        const val OLDER_PAGE = 1_000
+
+        /**
+         * Pages overlap by this many messages. New messages push the sweep down while it is
+         * being read, and the overlap keeps a message on a page boundary from being skipped.
+         */
+        const val PAGE_OVERLAP = 20
         private const val MESSAGE_CACHE_SIZE = 5_000
         private const val CONTACTS_TTL_MS = 24L * 60 * 60 * 1000
         const val MAX_IMAGE_BYTES = 12L * 1024 * 1024

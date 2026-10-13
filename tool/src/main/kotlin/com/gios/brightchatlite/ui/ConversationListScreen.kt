@@ -68,6 +68,7 @@ class ConversationListViewModel(
     val contacts: StateFlow<Contacts> = repo.contacts
     val favorites: StateFlow<Set<String>> = repo.favorites
     val lastError: StateFlow<String?> = repo.lastError
+    val older: StateFlow<ChatRepository.OlderState> = repo.older
 
     /** Null until the stored settings have been read. */
     private val _configured = MutableStateFlow<Boolean?>(null)
@@ -110,6 +111,10 @@ class ConversationListViewModel(
 
     override fun onAppPause() {
         poller?.cancel()
+    }
+
+    fun loadOlder() {
+        viewModelScope.launch { repo.loadOlderConversations() }
     }
 
     fun toggleTab() {
@@ -197,6 +202,7 @@ class ConversationListScreen(sealedActivity: SealedLightActivity) :
         val offline by viewModel.offline.collectAsState()
         val lastError by viewModel.lastError.collectAsState()
         val modal by viewModel.modal.collectAsState()
+        val older by viewModel.older.collectAsState()
         val sections = remember(all, contacts, favorites) { splitConversations(all, contacts, favorites) }
         val scroll = rememberScrollState()
         LaunchedEffect(Unit) { viewModel.wheel.collect { scroll.animateScrollBy(it * WHEEL_STEP_PX) } }
@@ -231,7 +237,15 @@ class ConversationListScreen(sealedActivity: SealedLightActivity) :
                         else -> {
                             val rows = if (tab == ListTab.KNOWN) sections.favorites + sections.known else sections.unknown
                             if (rows.isEmpty()) {
-                                CenterMessage(if (tab == ListTab.KNOWN) "No chats from people you know" else "No unknown senders")
+                                Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center) {
+                                    LightText(
+                                        text = if (tab == ListTab.KNOWN) "No recent chats from people you know" else "No recent unknown senders",
+                                        variant = LightTextVariant.Copy,
+                                        align = TextAlign.Center,
+                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 2f.gridUnitsAsDp()),
+                                    )
+                                    OlderChatsRow(state = older, onClick = viewModel::loadOlder)
+                                }
                             } else {
                                 LightScrollView(
                                     scrollState = scroll,
@@ -248,6 +262,7 @@ class ConversationListScreen(sealedActivity: SealedLightActivity) :
                                             onClick = { openThread(c) },
                                         )
                                     }
+                                    OlderChatsRow(state = older, onClick = viewModel::loadOlder)
                                 }
                             }
                         }
@@ -271,6 +286,29 @@ class ConversationListScreen(sealedActivity: SealedLightActivity) :
 
     companion object {
         const val WHEEL_STEP_PX = 180f
+    }
+}
+
+/**
+ * The last row of the list. The list holds the chats the recent messages belong to; this
+ * reads further back, one page per tap, so the list only grows when asked to.
+ */
+@Composable
+private fun OlderChatsRow(state: ChatRepository.OlderState, onClick: () -> Unit) {
+    val label = when (state) {
+        ChatRepository.OlderState.MORE -> "Older chats"
+        ChatRepository.OlderState.LOADING -> "Loading older chats…"
+        ChatRepository.OlderState.END -> "That's every chat"
+    }
+    val tappable = state == ChatRepository.OlderState.MORE
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(if (tappable) Modifier.lightClickable(onClick = onClick) else Modifier)
+            .padding(vertical = 1f.gridUnitsAsDp()),
+        contentAlignment = Alignment.Center,
+    ) {
+        LightText(text = label, variant = LightTextVariant.Copy, lighten = !tappable, align = TextAlign.Center)
     }
 }
 

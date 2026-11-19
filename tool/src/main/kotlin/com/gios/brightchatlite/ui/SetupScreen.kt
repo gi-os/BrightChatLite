@@ -10,6 +10,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewModelScope
 import com.gios.brightchatlite.api.SetupQr
@@ -42,7 +45,15 @@ data class SetupState(
     val busy: Boolean = false,
     val status: String? = null,
     val error: String? = null,
-)
+    /** The address and password as last saved, to tell whether the fields were edited. */
+    val savedUrl: String = "",
+    val savedPassword: String = "",
+) {
+    val changed: Boolean get() = url != savedUrl || password != savedPassword
+}
+
+/** The question on screen in place of the form. */
+private enum class SetupAsk { Disconnect, Discard }
 
 class SetupViewModel(private val repo: ChatRepository) : WheelViewModel<Boolean>() {
     private val _state = MutableStateFlow(SetupState())
@@ -53,7 +64,16 @@ class SetupViewModel(private val repo: ChatRepository) : WheelViewModel<Boolean>
             val cfg = repo.config()
             if (cfg != null) {
                 val api = if (repo.privateApi()) "Private API on: read receipts are sent" else "Private API off: reading here won't clear unread on the Mac"
-                _state.update { it.copy(url = cfg.url, password = cfg.password, connected = true, status = "Connected. $api") }
+                _state.update {
+                    it.copy(
+                        url = cfg.url,
+                        password = cfg.password,
+                        savedUrl = cfg.url,
+                        savedPassword = cfg.password,
+                        connected = true,
+                        status = "Connected. $api",
+                    )
+                }
             }
         }
     }
@@ -125,10 +145,41 @@ class SetupScreen(sealedActivity: SealedLightActivity) :
     @Composable
     override fun Content() {
         val state by viewModel.state.collectAsState()
+        var ask by remember { mutableStateOf<SetupAsk?>(null) }
+        val back: () -> Unit = {
+            if (state.changed && !state.busy) {
+                ask = SetupAsk.Discard
+            } else {
+                goBack(null)
+            }
+        }
         ChatSurface {
+            if (ask == SetupAsk.Discard) {
+                ConfirmView(
+                    title = "Discard changes?",
+                    confirmLabel = "Discard",
+                    cancelLabel = "Keep editing",
+                    onConfirm = { goBack(null) },
+                    onCancel = { ask = null },
+                )
+                return@ChatSurface
+            }
+            if (ask == SetupAsk.Disconnect) {
+                ConfirmView(
+                    title = "Disconnect? This clears saved chats.",
+                    confirmLabel = "Disconnect",
+                    cancelLabel = "Cancel",
+                    onConfirm = {
+                        viewModel.disconnect()
+                        ask = null
+                    },
+                    onCancel = { ask = null },
+                )
+                return@ChatSurface
+            }
             Column(modifier = Modifier.fillMaxSize()) {
                 LightTopBar(
-                    leftButton = LightBarButton.LightIcon(LightIcons.BACK, onClick = { goBack(null) }),
+                    leftButton = LightBarButton.LightIcon(LightIcons.BACK, onClick = back),
                     center = LightTopBarCenter.Text("Server"),
                 )
                 LightScrollView(
@@ -139,7 +190,8 @@ class SetupScreen(sealedActivity: SealedLightActivity) :
                 ) {
                     LightText(
                         text = "Chat Lite talks to your own BlueBubbles Server on a Mac signed into iMessage. " +
-                            "Reach it over Tailscale or your home Wi-Fi.",
+                            "Reach it over Tailscale or your home Wi-Fi. " +
+                            "Scan the QR code in BlueBubbles Server, or type the address and password.",
                         variant = LightTextVariant.Detail,
                         lighten = true,
                     )
@@ -171,9 +223,9 @@ class SetupScreen(sealedActivity: SealedLightActivity) :
                         Spacer(modifier = Modifier.height(1f.gridUnitsAsDp()))
                         LightText(
                             text = "Disconnect and clear cache",
-                            variant = LightTextVariant.Detail,
+                            variant = LightTextVariant.Copy,
                             underline = true,
-                            modifier = Modifier.lightClickable { viewModel.disconnect() },
+                            modifier = Modifier.lightClickable { ask = SetupAsk.Disconnect },
                         )
                     }
                     Spacer(modifier = Modifier.height(1f.gridUnitsAsDp()))

@@ -117,23 +117,42 @@ class ConversationListViewModel(
         viewModelScope.launch { repo.loadOlderConversations() }
     }
 
+    /** Checks the network again and reads the list; the error line clears when it works. */
+    fun retry() {
+        viewModelScope.launch {
+            val online = runCatching { connectivity.currentStatus.isConnected }.getOrDefault(true)
+            _offline.value = !online
+            if (online) {
+                repo.refreshServerInfo()
+                repo.refreshConversations()
+            }
+        }
+    }
+
     fun toggleTab() {
         _tab.value = if (_tab.value == ListTab.KNOWN) ListTab.UNKNOWN else ListTab.KNOWN
     }
 
-    fun showModal(message: String) {
+    /** Runs when the current modal is closed, so a failed send can reopen the editor after the reason. */
+    private var afterModal: (() -> Unit)? = null
+
+    fun showModal(message: String, then: (() -> Unit)? = null) {
         _modal.value = message
+        afterModal = then
     }
 
     fun dismissModal() {
         _modal.value = null
+        val next = afterModal
+        afterModal = null
+        next?.invoke()
     }
 
-    fun newChat(address: String, text: String, onOpened: (Conversation) -> Unit) {
+    fun newChat(address: String, text: String, onOpened: (Conversation) -> Unit, onFailed: () -> Unit) {
         viewModelScope.launch {
             runCatching { repo.newChat(address, text) }
                 .onSuccess(onOpened)
-                .onFailure { showModal("Couldn't start the chat. ${ChatRepository.describe(it)}.") }
+                .onFailure { showModal("Couldn't start the chat. ${ChatRepository.describe(it)}.", then = onFailed) }
         }
     }
 
@@ -186,8 +205,22 @@ class ConversationListScreen(sealedActivity: SealedLightActivity) :
                 viewModel.showModal("That isn't a phone number or an email address.")
                 return@navigateTo
             }
-            navigateTo({ TextEditorScreen(it, "To ${Handles.pretty(address)}", "", "SEND") }) { text ->
-                if (text.isNotBlank()) viewModel.newChat(address, text.trim()) { openThread(it) }
+            composeNewChat(address, "")
+        }
+    }
+
+    /** The message editor for a new chat; when the send fails it opens again with the text kept. */
+    private fun composeNewChat(address: String, draft: String) {
+        navigateTo({
+            TextEditorScreen(it, "To ${Handles.pretty(address)}", draft, "SEND", discardTitle = "Discard message?")
+        }) { text ->
+            if (text.isNotBlank()) {
+                viewModel.newChat(
+                    address,
+                    text.trim(),
+                    onOpened = { openThread(it) },
+                    onFailed = { composeNewChat(address, text) },
+                )
             }
         }
     }
@@ -216,24 +249,41 @@ class ConversationListScreen(sealedActivity: SealedLightActivity) :
                 )
                 val status = when {
                     configured != true -> null
-                    offline -> "Offline. Showing saved chats."
-                    lastError != null -> "$lastError. Showing saved chats."
+                    all.isEmpty() -> null
+                    offline -> "Offline. Showing saved chats. Tap to try again."
+                    lastError != null -> "$lastError. Showing saved chats. Tap to try again."
                     else -> null
                 }
                 if (status != null) {
                     LightText(
                         text = status,
-                        variant = LightTextVariant.Fine,
-                        lighten = true,
+                        variant = LightTextVariant.Detail,
                         align = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 1f.gridUnitsAsDp()),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .lightClickable { viewModel.retry() }
+                            .padding(horizontal = 1f.gridUnitsAsDp(), vertical = 0.3f.gridUnitsAsDp()),
                     )
                 }
                 Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                     when {
                         configured == false -> CenterMessage("Connect your BlueBubbles server to see your iMessages.")
                         configured == null -> Unit
-                        all.isEmpty() -> CenterMessage(if (lastError == null) "Loading chats…" else "No chats yet")
+                        all.isEmpty() && (offline || lastError != null) -> Column(
+                            modifier = Modifier.fillMaxSize().padding(horizontal = 2f.gridUnitsAsDp()),
+                            verticalArrangement = Arrangement.Center,
+                        ) {
+                            LightText(text = "Could not connect", variant = LightTextVariant.Copy, align = TextAlign.Center)
+                            LightText(
+                                text = if (offline) "No network connection" else lastError ?: "",
+                                variant = LightTextVariant.Copy,
+                                align = TextAlign.Center,
+                            )
+                            Spacer(modifier = Modifier.height(1f.gridUnitsAsDp()))
+                            ActionLink("Try again", viewModel::retry)
+                            ActionLink("Edit server", ::openSetup)
+                        }
+                        all.isEmpty() -> CenterMessage("Loading chats…")
                         else -> {
                             val rows = if (tab == ListTab.KNOWN) sections.favorites + sections.known else sections.unknown
                             if (rows.isEmpty()) {

@@ -32,6 +32,7 @@ import com.gios.brightchatlite.model.Attachment
 import com.gios.brightchatlite.model.ChatMessage
 import com.gios.brightchatlite.model.Contacts
 import com.gios.brightchatlite.model.Conversation
+import com.gios.brightchatlite.model.PENDING_PREFIX
 import com.gios.brightchatlite.model.ThreadRow
 import com.gios.brightchatlite.model.TimeFormat
 import com.gios.brightchatlite.model.buildThreadRows
@@ -60,6 +61,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.SharingStarted
@@ -75,9 +77,13 @@ class ThreadViewModel(
 
     /** Raw messages as fetched and sent, tapbacks included; folded for display. */
     private val _raw = MutableStateFlow<List<ChatMessage>>(emptyList())
-    val messages: StateFlow<List<ChatMessage>> = _raw
-        .map { foldReactions(it) }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** Server-failed messages already sent again; every fetch brings them back, so they stay hidden. */
+    private val retried = MutableStateFlow<Set<String>>(emptySet())
+
+    val messages: StateFlow<List<ChatMessage>> = combine(_raw, retried) { raw, hidden ->
+        foldReactions(if (hidden.isEmpty()) raw else raw.filterNot { it.guid in hidden })
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     val contacts: StateFlow<Contacts> = repo.contacts
 
@@ -178,6 +184,16 @@ class ThreadViewModel(
         }
     }
 
+    /** Sends a failed message again. A copy that only ever existed here is replaced by the new send. */
+    fun retry(message: ChatMessage) {
+        if (message.guid.startsWith(PENDING_PREFIX)) {
+            _raw.value = _raw.value.filterNot { it.guid == message.guid }
+        } else {
+            retried.value = retried.value + message.guid
+        }
+        send(message.text)
+    }
+
     fun toggleFavorite() {
         viewModelScope.launch { repo.toggleFavorite(conversation.guid) }
     }
@@ -225,7 +241,13 @@ class ThreadScreen(
     override fun createViewModel() = ThreadViewModel(repo, lightContext.connectivity, conversation)
 
     private fun reply() {
-        navigateTo({ TextEditorScreen(it, "Message", "", "SEND") }) { text -> viewModel.send(text) }
+        navigateTo({
+            TextEditorScreen(
+                it, "Message", "", "SEND",
+                discardTitle = "Discard message?",
+                draftId = "thread:" + conversation.guid,
+            )
+        }) { text -> viewModel.send(text) }
     }
 
     @Composable
@@ -341,9 +363,11 @@ class ThreadScreen(
         val m = row.message
         val align = if (m.fromMe) TextAlign.End else TextAlign.Start
         val horizontal = if (m.fromMe) Alignment.End else Alignment.Start
+        val failed = m.fromMe && m.error != 0 && m.attachments.isEmpty() && m.bodyText != null
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .then(if (failed) Modifier.lightClickable { viewModel.retry(m) } else Modifier)
                 .padding(top = if (row.showLabel) 0.8f.gridUnitsAsDp() else 0.3f.gridUnitsAsDp()),
             horizontalAlignment = horizontal,
         ) {
@@ -374,8 +398,12 @@ class ThreadScreen(
                 }
                 LightText(text = marks, variant = LightTextVariant.Fine, lighten = true, align = align)
             }
-            row.receipt?.let {
-                LightText(text = it, variant = LightTextVariant.Fine, lighten = it != "Not delivered", align = align)
+            if (failed) {
+                LightText(text = "Not delivered. Tap to try again", variant = LightTextVariant.Fine, align = align)
+            } else {
+                row.receipt?.let {
+                    LightText(text = it, variant = LightTextVariant.Fine, lighten = it != "Not delivered", align = align)
+                }
             }
         }
     }
